@@ -7,6 +7,11 @@ on:
       - 'ios/**'
       - '.github/workflows/build-ios.yml'
   workflow_dispatch:
+    inputs:
+      runner:
+        description: 'macOS Runner Image (macos-15 nhanh hơn khi macos-26 nghẽn hàng đợi)'
+        required: false
+        default: 'macos-15'
 
 concurrency:
   group: "ios-build-${{ github.ref }}"
@@ -14,7 +19,7 @@ concurrency:
 
 jobs:
   build-unsigned-ipa:
-    runs-on: macos-latest
+    runs-on: ${{ inputs.runner || 'macos-15' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
