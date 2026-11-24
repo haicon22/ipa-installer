@@ -1,0 +1,74 @@
+name: Build Native iOS IPA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - '.github/workflows/build-ios.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: "ios-build-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  build-unsigned-ipa:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Inspect Xcode & SDK Versions
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Cache Swift Package Manager Sources
+        uses: actions/cache@v4
+        with:
+          path: ios/SourcePackages
+          key: ${{ runner.os }}-spm-${{ hashFiles('ios/project.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Ensure XcodeGen is available & Generate Project
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          cd ios
+          xcodegen generate
+
+      - name: Build Release App for Generic iOS Device (iOS 15.0+)
+        run: |
+          xcodebuild build \
+            -project ios/IPAInstaller.xcodeproj \
+            -scheme IPAInstaller \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath ios/build/DerivedData \
+            -clonedSourcePackagesDirPath ios/SourcePackages \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Verify Mach-O Architecture & Deployment Target and Package Unsigned IPA
+        run: |
+          APP_PATH="ios/build/DerivedData/Build/Products/Release-iphoneos/IPAInstaller.app"
+          test -d "$APP_PATH"
+          lipo -info "$APP_PATH/IPAInstaller"
+          otool -l "$APP_PATH/IPAInstaller" | grep -A 4 -E "LC_BUILD_VERSION|LC_VERSION_MIN_IPHONEOS" || true
+
+          mkdir -p ios/build/package/Payload
+          cp -R "$APP_PATH" ios/build/package/Payload/
+          cd ios/build/package
+          zip -qry ../IPAInstaller-unsigned.ipa Payload
+          ls -lh ../IPAInstaller-unsigned.ipa
+
+      - name: Upload Unsigned IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IPAInstaller-unsigned-ipa
+          path: ios/build/IPAInstaller-unsigned.ipa
+          retention-days: 30
