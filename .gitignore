@@ -1,0 +1,47 @@
+# ==========================================
+# Bảo mật tuyệt đối khóa, token & chứng chỉ
+# ==========================================
+github_token
+*github_token*
+.env
+.env.*
+*.p12
+*.pfx
+*.mobileprovision
+*.provisionprofile
+*.pem
+*.key
+*.cer
+*.crt
+*.der
+*.mobiledevicepairing
+*pairing*.plist
+
+# ==========================================
+# Xcode / Swift / macOS Build Artifacts
+# ==========================================
+.DS_Store
+*.xcodeproj/project.xcworkspace/
+*.xcodeproj/xcuserdata/
+xcuserdata/
+DerivedData/
+.build/
+build/
+*.ipa
+*.app
+*.dSYM.zip
+*.dSYM
+
+# ==========================================
+# Node / Web PWA Build Temp (nếu có)
+# ==========================================
+node_modules/
+.npm/
+dist-temp/
+
+# ==========================================
+# Android Termux Temp & Logs
+# ==========================================
+*.log
+tmp/
+.tmp/

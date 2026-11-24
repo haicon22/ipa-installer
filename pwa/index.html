@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="IPA Installer" />
+  <meta name="theme-color" content="#0a84ff" />
+  <meta name="description" content="Trình quản lý và phân tích nhị phân IPA trực tiếp trên Safari iPhone (Info.plist, CgBI Icon, Mach-O, Chữ ký & Provisioning Profile) - 100% Offline, Chi phí 0 đồng." />
+  <title>IPA Installer – Phân tích &amp; Quản lý IPA trên iPhone</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
+  <link rel="stylesheet" href="./css/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Thanh tiêu đề kiểu iOS mờ xuyên thấu -->
+    <header class="ios-navbar">
+      <div class="navbar-inner">
+        <div class="navbar-brand">
+          <span class="brand-dot" id="networkDot" title="Trạng thái mạng"></span>
+          <h1 id="navTitle">Phân tích IPA</h1>
+        </div>
+        <div class="navbar-badges">
+          <span class="pill pill-offline" id="offlineBadge">Đang kiểm tra...</span>
+          <span class="pill pill-ios" id="iosBadge">iOS</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Nội dung chính -->
+    <main class="app-content">
+      <!-- Khuyến nghị cài PWA lên Màn hình chính khi mở trên Safari thường -->
+      <div class="install-pwa-banner hidden" id="pwaBanner">
+        <div class="banner-text">
+          <strong>Cài biểu tượng lên Màn hình chính iPhone</strong>
+          <p>Nhấn nút <b>Chia sẻ</b> trên thanh Safari rồi chọn <b>"Thêm vào MH chính"</b> để mở toàn màn hình và dùng 100% Offline.</p>
+        </div>
+        <button type="button" class="btn-icon-close" id="dismissBannerBtn" aria-label="Đóng thông báo">&times;</button>
+      </div>
+
+      <!-- TAB 1: PHÂN TÍCH IPA -->
+      <section class="tab-view active" id="tab-analyze">
+        <div class="card upload-card" id="dropZone">
+          <input type="file" id="ipaFileInput" accept=".ipa,.tipa,application/octet-stream,application/zip" hidden />
+          <div class="upload-icon-wrap">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+          </div>
+          <h2>Chọn tệp IPA từ iPhone</h2>
+          <p class="muted-text">
+            Đọc trực tiếp theo lát cắt nhị phân (<code>Blob.slice</code>) ngay trên máy — hỗ trợ file IPA nặng nhiều GB mà không làm tràn RAM Safari và không tải dữ liệu lên máy chủ nào.
+          </p>
+          <div class="upload-actions">
+            <button type="button" class="btn btn-primary" id="pickFileBtn">
+              Chọn file .ipa từ Tệp (Files)
+            </button>
+            <button type="button" class="btn btn-secondary" id="loadSampleBtn">
+              Nạp IPA nhị phân mẫu để kiểm thử
+            </button>
+          </div>
+        </div>
+
+        <!-- Hộp tiến trình giải mã -->
+        <div class="card progress-card hidden" id="progressCard">
+          <div class="progress-head">
+            <span id="progressStage">Đang khởi tạo bộ phân tích...</span>
+            <strong id="progressPercent">0%</strong>
+          </div>
+          <div class="progress-track">
+            <div class="progress-bar" id="progressBar" style="width: 0%"></div>
+          </div>
+        </div>
+
+        <!-- Thông báo lỗi nếu tệp hỏng -->
+        <div class="card alert-card alert-danger hidden" id="errorCard">
+          <strong>Không thể phân tích tệp IPA</strong>
+          <p id="errorMessage"></p>
+        </div>
+
+        <!-- Kết quả chi tiết kiểu App Store -->
+        <div id="resultContainer" class="hidden"></div>
+      </section>
+
+      <!-- TAB 2: THƯ VIỆN IPA ĐÃ PHÂN TÍCH -->
+      <section class="tab-view" id="tab-library">
+        <div class="search-bar-wrap">
+          <input type="search" id="librarySearchInput" class="ios-input" placeholder="Tìm theo tên ứng dụng hoặc Bundle ID..." />
+        </div>
+        <div class="section-header-row">
+          <span class="section-label" id="libraryCountLabel">0 hồ sơ đã lưu offline</span>
+          <button type="button" class="btn-link-danger" id="clearLibraryBtn">Xóa tất cả</button>
+        </div>
+        <div id="libraryList" class="library-list"></div>
+      </section>
+
+      <!-- TAB 3: RANH GIỚI KỸ THUẬT & HỆ SINH THÁI 0 ĐỒNG -->
+      <section class="tab-view" id="tab-guide">
+        <div class="card">
+          <h2 class="card-title">Phân định minh bạch: Phân tích ≠ Ký ≠ Cài đặt</h2>
+          <p class="muted-text">
+            Đúng nguyên tắc không tạo nút chức năng giả lập, ứng dụng công khai rõ khả năng thực tế của iOS không Jailbreak ở mức chi phí 0 đồng:
+          </p>
+          <div class="truth-list">
+            <div class="truth-item truth-ok">
+              <span class="badge badge-ok">Làm được 100% trên PWA</span>
+              <h3>1. Quản lý &amp; Phân tích sâu IPA</h3>
+              <p>Đọc cấu trúc ZIP/ZIP64, giải mã <code>Info.plist</code> nhị phân (<code>bplist00</code>), khôi phục ảnh biểu tượng <code>CgBI</code>, đọc nhị phân <code>Mach-O</code> (CPU, khóa DRM FairPlay), giải mã chứng chỉ X.509 &amp; <code>embedded.mobileprovision</code>, đối chiếu UDID và xuất báo cáo kỹ thuật hoàn toàn Offline.</p>
+            </div>
+            <div class="truth-item truth-warn">
+              <span class="badge badge-warn">Cần chứng chỉ / Apple ID 0đ</span>
+              <h3>2. Ký số ứng dụng (Code Signing)</h3>
+              <p>Ký nhị phân Mach-O bằng <code>ZSign</code> được tích hợp trong bản <b>IPA Installer Native (SwiftUI)</b>. Nếu dùng tài khoản Apple ID cá nhân miễn phí (<i>Personal Team</i>): chứng chỉ có hạn <b>7 ngày</b>, tối đa <b>3 ứng dụng</b> đồng thời và <b>10 App ID mỗi 7 ngày</b> (mỗi <code>.appex</code> trong <code>PlugIns/</code> tính 1 App ID).</p>
+            </div>
+            <div class="truth-item truth-stop">
+              <span class="badge badge-danger">Giới hạn cứng của Safari iOS</span>
+              <h3>3. Tại sao Safari không thể cài IPA 0 đồng trực tiếp?</h3>
+              <p>Tiến trình hệ thống <code>installd</code> của iOS chặn hoàn toàn giao thức web <code>itms-services://</code> đối với chứng chỉ <i>Development</i> miễn phí. Để cài đặt IPA với chi phí 0 đồng không cần PC, cần khởi tạo tệp ghép đôi (<code>Pairing File</code>) một lần qua cáp OTG bằng <b>Android Termux Bootstrap</b> hoặc chuyển tiếp sang <b>SideStore / LiveContainer</b>.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2 class="card-title">3 thành phần trong hệ sinh thái dự án</h2>
+          <ul class="ios-grouped-list">
+            <li>
+              <strong>A. IPA Installer Web (PWA hiện tại)</strong>
+              <span>Cài ngay từ Safari lên màn hình chính, chạy offline, kiểm tra kỹ mọi file IPA trước khi quyết định ký/cài.</span>
+            </li>
+            <li>
+              <strong>B. IPA Installer Native (SwiftUI – iOS 15.0 → 26.6+)</strong>
+              <span>Biên dịch tự động trên GitHub Actions, phát hành tại GitHub Releases kèm bộ <code>ZSign</code> C++ và kiểm tra chứng chỉ OCSP.</span>
+            </li>
+            <li>
+              <strong>C. Android Termux Bootstrap</strong>
+              <span>Bộ công cụ chẩn đoán cáp USB-OTG, <code>usbmuxd</code> và <code>libimobiledevice</code> ngay trên điện thoại Android không cần máy tính.</span>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- TAB 4: THIẾT LẬP HỆ THỐNG -->
+      <section class="tab-view" id="tab-settings">
+        <div class="card">
+          <h2 class="card-title">Cấu hình kiểm tra thiết bị</h2>
+          <p class="muted-text">Thông tin dưới đây chỉ lưu cục bộ trên trình duyệt iPhone của bạn để tự động đối chiếu tính tương thích khi phân tích IPA.</p>
+
+          <div class="form-group">
+            <label for="settingIosVersion">Phiên bản iOS của iPhone hiện tại</label>
+            <input type="text" id="settingIosVersion" class="ios-input" placeholder="Ví dụ: 26.6, 18.4, 16.7, 15.8..." />
+            <small>Dùng để cảnh báo nếu IPA yêu cầu <code>MinimumOSVersion</code> cao hơn máy bạn.</small>
+          </div>
+
+          <div class="form-group">
+            <label for="settingDeviceUdid">UDID chiếc iPhone của bạn (tùy chọn)</label>
+            <input type="text" id="settingDeviceUdid" class="ios-input mono-input" placeholder="Ví dụ: 00008130-001A2B3C4D5E6F01" />
+            <small>Nếu nhập UDID, khi mở IPA đã ký sẵn ứng dụng sẽ kiểm tra ngay máy bạn có nằm trong danh sách <code>ProvisionedDevices</code> hay không.</small>
+          </div>
+
+          <div class="form-group">
+            <label for="settingTheme">Giao diện hiển thị</label>
+            <select id="settingTheme" class="ios-input">
+              <option value="auto">Tự động theo hệ thống iOS</option>
+              <option value="dark">Chế độ Tối (Dark Mode)</option>
+              <option value="light">Chế độ Sáng (Light Mode)</option>
+            </select>
+          </div>
+
+          <button type="button" class="btn btn-primary" id="saveSettingsBtn">Lưu thiết lập</button>
+          <span class="save-toast hidden" id="saveSettingsToast">Đã lưu cấu hình cục bộ!</span>
+        </div>
+
+        <div class="card">
+          <h2 class="card-title">Bộ nhớ đệm Offline &amp; Thông tin phiên bản</h2>
+          <ul class="kv-list">
+            <li><span>Phiên bản PWA</span><strong>v1.0.0 (Giai đoạn 2)</strong></li>
+            <li><span>Trạng thái Service Worker</span><strong id="swStatusText">Đang kiểm tra...</strong></li>
+            <li><span>Dải iOS tương thích</span><strong>iOS 15.0 – iOS 26.6+</strong></li>
+            <li><span>Chi phí vận hành</span><strong>0 đồng (100% Client-side)</strong></li>
+          </ul>
+          <div class="settings-actions">
+            <button type="button" class="btn btn-secondary" id="downloadSampleIpaBtn">
+              Tải file .ipa mẫu về máy để kiểm chứng ngoài
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Thanh điều hướng dưới cùng chuẩn iOS Tab Bar -->
+    <nav class="ios-tabbar" aria-label="Điều hướng chính">
+      <button type="button" class="tab-btn active" data-tab="analyze" data-title="Phân tích IPA">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
+        <span>Phân tích</span>
+      </button>
+      <button type="button" class="tab-btn" data-tab="library" data-title="Thư viện IPA">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        </svg>
+        <span>Thư viện</span>
+      </button>
+      <button type="button" class="tab-btn" data-tab="guide" data-title="Cơ chế 0 đồng">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
+        </svg>
+        <span>Cơ chế 0đ</span>
+      </button>
+      <button type="button" class="tab-btn" data-tab="settings" data-title="Thiết lập hệ thống">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+        <span>Thiết lập</span>
+      </button>
+    </nav>
+  </div>
+
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
