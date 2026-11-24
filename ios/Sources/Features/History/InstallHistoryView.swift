@@ -52,13 +52,12 @@ struct InstallHistoryView: View {
         .navigationTitle("Lịch sử cài đặt")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if !appState.history.isEmpty {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Xóa hết") {
-                        appState.clearHistory()
-                    }
-                    .foregroundColor(.red)
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("Xóa hết") {
+                    appState.clearHistory()
                 }
+                .foregroundColor(.red)
+                .disabled(appState.history.isEmpty)
             }
         }
     }
