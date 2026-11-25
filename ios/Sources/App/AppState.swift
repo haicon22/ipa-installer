@@ -36,6 +36,11 @@ public final class AppState: ObservableObject {
         self.selectedCertificateId = certificates.first?.id
         self.history = storage.loadHistory()
 
+        // Gắn 3 lõi độc lập đã hoàn thiện ở Giai đoạn 4
+        self.ipaParser = NativeIPAParser()
+        self.certValidator = NativeCertificateValidator()
+        self.ipaSigner = NativeIPASigner()
+
         downloader.onDownloadCompleted = { [weak self] stagedURL, suggestedName in
             guard let self = self else { return }
             self.importIPAFromURL(stagedURL, overrideDisplayFileName: suggestedName)
@@ -115,6 +120,56 @@ public final class AppState: ObservableObject {
         storage.saveCatalog(packages)
         refreshStorageUsage()
         logger.info("Storage", "Đã xóa gói IPA: \(item.effectiveTitle)")
+    }
+
+    public func registerSignedIPA(at signedURL: URL) async {
+        let relPath = "SignedIPAs/\(signedURL.lastPathComponent)"
+        let size = ((try? FileManager.default.attributesOfItem(atPath: signedURL.path))?[.size] as? NSNumber)?.int64Value ?? 0
+        let meta = try? await ipaParser?.parsePackage(at: signedURL)
+        let item = IPAPackageItem(
+            fileName: signedURL.lastPathComponent,
+            relativeFilePath: relPath,
+            fileSize: size,
+            isSignedOutput: true,
+            metadata: meta
+        )
+        packages.insert(item, at: 0)
+        storage.saveCatalog(packages)
+        refreshStorageUsage()
+        logger.info("IPASigner", "Đã lưu gói IPA đã ký vào Thư viện: \(item.effectiveTitle)")
+    }
+
+    public func importValidatedCertificatePair(
+        p12SourceURL: URL,
+        password: String,
+        provisionSourceURL: URL,
+        nickname: String
+    ) async throws {
+        guard let validator = certValidator else {
+            try importBasicCertificatePair(
+                p12SourceURL: p12SourceURL,
+                password: password,
+                provisionSourceURL: provisionSourceURL,
+                nickname: nickname
+            )
+            return
+        }
+        let record = try await validator.importCertificatePair(
+            p12URL: p12SourceURL,
+            p12Password: password,
+            mobileProvisionURL: provisionSourceURL,
+            nickname: nickname
+        )
+        certificates.insert(record, at: 0)
+        if selectedCertificateId == nil {
+            selectedCertificateId = record.id
+        }
+        storage.saveCertificates(certificates)
+        refreshStorageUsage()
+        logger.info(
+            "Certificates",
+            "Đã kiểm định cặp chứng chỉ (\(record.distributionType)) & OCSP (\(record.lastOCSPStatus.rawValue)): \(record.commonName)"
+        )
     }
 
     public func importBasicCertificatePair(

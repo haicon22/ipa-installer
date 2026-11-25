@@ -32,10 +32,17 @@ jobs:
       - name: Cache Swift Package Manager Sources
         uses: actions/cache@v4
         with:
-          path: ios/SourcePackages
-          key: ${{ runner.os }}-spm-${{ hashFiles('ios/project.yml') }}
+          path: |
+            ios/SourcePackages
+            ios/Packages/ZSignKit/.build
+          key: ${{ runner.os }}-spm-v2-${{ hashFiles('ios/project.yml', 'ios/Packages/ZSignKit/Package.swift') }}
           restore-keys: |
-            ${{ runner.os }}-spm-
+            ${{ runner.os }}-spm-v2-
+
+      - name: Run Real ZSign C++ & OpenSSL Mach-O Signing Tests (Verified by Apple codesign)
+        run: |
+          cd ios/Packages/ZSignKit
+          swift test -v
 
       - name: Ensure XcodeGen is available & Generate Project
         run: |

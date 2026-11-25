@@ -138,19 +138,23 @@ struct CertificateManagerView: View {
 
     private func importCertificatePair() {
         guard let p12URL = pickedP12URL, let provURL = pickedProvisionURL else { return }
-        do {
-            try appState.importBasicCertificatePair(
-                p12SourceURL: p12URL,
-                password: p12Password,
-                provisionSourceURL: provURL,
-                nickname: nickname
-            )
-            pickedP12URL = nil
-            pickedProvisionURL = nil
-            p12Password = ""
-            nickname = ""
-        } catch {
-            appState.alertMessage = error.localizedDescription
+        let pwd = p12Password
+        let nick = nickname
+        Task {
+            do {
+                try await appState.importValidatedCertificatePair(
+                    p12SourceURL: p12URL,
+                    password: pwd,
+                    provisionSourceURL: provURL,
+                    nickname: nick
+                )
+                pickedP12URL = nil
+                pickedProvisionURL = nil
+                p12Password = ""
+                nickname = ""
+            } catch {
+                appState.alertMessage = error.localizedDescription
+            }
         }
     }
 }

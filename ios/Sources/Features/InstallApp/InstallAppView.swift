@@ -71,27 +71,33 @@ struct InstallAppView: View {
             }
 
             Section(
-                header: Text("3. Thực thi Ký & Cài đặt"),
-                footer: Text("Nguyên tắc trung thực: Nút thực thi chỉ mở khóa khi các module ZSign C++ (Giai đoạn 4) và Installation Engine (Giai đoạn 6) đã được gắn đầy đủ — không tạo tiến trình giả lập.")
+                header: Text("3. Thực thi Ký số & Cài đặt"),
+                footer: Text("Gói IPA sau khi ký bằng ZSign C++ sẽ được tự xác minh chữ ký và lưu ngay vào mục 'IPA đã ký số' trong Thư viện.")
             ) {
-                if appState.ipaSigner == nil || appState.installationManager == nil {
-                    HStack(spacing: 10) {
-                        Image(systemName: "wrench.and.screwdriver.fill")
-                            .foregroundColor(.orange)
-                        Text("Nhân ký ZSign C++ (Giai đoạn 4) và Installation Engine (Giai đoạn 6) đang trong lộ trình tích hợp kế tiếp.")
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
+                Button {
+                    Task {
+                        await runSignOnlyOrInstallFlow(triggerInstallAfterSign: false)
                     }
-                } else {
+                } label: {
+                    Label("Kiểm định chứng chỉ & Ký xuất tệp .ipa", systemImage: "signature")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .disabled(isRunningAction || appState.activeCertificate == nil || appState.ipaSigner == nil)
+
+                if let installer = appState.installationManager {
                     Button {
                         Task {
-                            await runSignAndInstallFlow()
+                            await runSignOnlyOrInstallFlow(triggerInstallAfterSign: true)
                         }
                     } label: {
-                        Label("Kiểm định chứng chỉ, Ký số & Cài đặt", systemImage: "arrow.down.app.fill")
+                        Label("Ký số & Kích hoạt cài đặt (\(installer.statusSummary))", systemImage: "arrow.down.app.fill")
                             .font(.subheadline.weight(.semibold))
                     }
-                    .disabled(isRunningAction || appState.activeCertificate == nil)
+                    .disabled(isRunningAction || appState.activeCertificate == nil || appState.ipaSigner == nil)
+                } else {
+                    Text("Module điều phối cài đặt (Installation Engine) sẽ được gắn vào ở Giai đoạn 6.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
                 }
             }
         }
@@ -100,11 +106,10 @@ struct InstallAppView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private func runSignAndInstallFlow() async {
+    private func runSignOnlyOrInstallFlow(triggerInstallAfterSign: Bool) async {
         guard let cert = appState.activeCertificate,
               let validator = appState.certValidator,
               let signer = appState.ipaSigner,
-              let installer = appState.installationManager,
               let srcURL = try? appState.storage.resolveURL(for: packageItem.relativeFilePath) else {
             return
         }
@@ -123,7 +128,7 @@ struct InstallAppView: View {
 
         if steps.contains(where: { !$0.passed && $0.isBlocking }) {
             isRunningAction = false
-            appState.logger.error("Validator", "Chặn cài đặt \(packageItem.effectiveTitle) do không vượt qua kiểm định chứng chỉ.")
+            appState.logger.error("Validator", "Chặn ký/cài đặt \(packageItem.effectiveTitle) do không vượt qua kiểm định chứng chỉ.")
             return
         }
 
@@ -134,32 +139,50 @@ struct InstallAppView: View {
                 options: options
             ) { frac, msg in
                 Task { @MainActor in
-                    self.progressFraction = 0.2 + frac * 0.6
+                    self.progressFraction = 0.2 + frac * 0.65
                     self.progressMessage = msg
                 }
             }
 
-            progressFraction = 0.9
-            progressMessage = "Đang chuyển giao gói đã ký cho Installation Engine..."
-            let method = try await installer.triggerInstallation(
-                signedIPAURL: signedURL,
-                package: packageItem,
-                certificate: cert
-            )
+            await appState.registerSignedIPA(at: signedURL)
 
-            progressFraction = 1.0
-            progressMessage = "Đã kích hoạt cài đặt qua \(method)."
-            appState.recordHistory(
-                InstallHistoryEntry(
-                    appName: packageItem.effectiveTitle,
-                    bundleId: packageItem.effectiveBundleId,
-                    version: packageItem.metadata?.version ?? "1.0",
-                    methodUsed: method,
-                    succeeded: true,
-                    detailMessage: "Ký và gọi trình cài đặt hệ thống thành công.",
-                    iosVersion: DeviceEnvironment.iosVersionString
+            if triggerInstallAfterSign, let installer = appState.installationManager {
+                progressFraction = 0.92
+                progressMessage = "Đang chuyển giao gói đã ký cho Installation Engine..."
+                let method = try await installer.triggerInstallation(
+                    signedIPAURL: signedURL,
+                    package: packageItem,
+                    certificate: cert
                 )
-            )
+                progressFraction = 1.0
+                progressMessage = "Đã kích hoạt cài đặt qua \(method)."
+                appState.recordHistory(
+                    InstallHistoryEntry(
+                        appName: packageItem.effectiveTitle,
+                        bundleId: packageItem.effectiveBundleId,
+                        version: packageItem.metadata?.version ?? "1.0",
+                        methodUsed: method,
+                        succeeded: true,
+                        detailMessage: "Ký bằng ZSign và kích hoạt trình cài đặt thành công.",
+                        iosVersion: DeviceEnvironment.iosVersionString
+                    )
+                )
+            } else {
+                progressFraction = 1.0
+                progressMessage = "Đã ký và xác minh thành công! Tệp đã lưu trong Thư viện IPA đã ký."
+                appState.recordHistory(
+                    InstallHistoryEntry(
+                        appName: packageItem.effectiveTitle,
+                        bundleId: packageItem.effectiveBundleId,
+                        version: packageItem.metadata?.version ?? "1.0",
+                        methodUsed: "ZSign On-Device (Xuất IPA)",
+                        succeeded: true,
+                        detailMessage: "Ký số & tự xác minh thành công (\(signedURL.lastPathComponent)).",
+                        iosVersion: DeviceEnvironment.iosVersionString
+                    )
+                )
+            }
+
             if appState.autoCleanTempAfterSign {
                 appState.cleanTemporaryFiles()
             }
@@ -170,7 +193,7 @@ struct InstallAppView: View {
                     appName: packageItem.effectiveTitle,
                     bundleId: packageItem.effectiveBundleId,
                     version: packageItem.metadata?.version ?? "1.0",
-                    methodUsed: "ZSign + Engine",
+                    methodUsed: triggerInstallAfterSign ? "ZSign + Engine" : "ZSign On-Device",
                     succeeded: false,
                     detailMessage: error.localizedDescription,
                     iosVersion: DeviceEnvironment.iosVersionString

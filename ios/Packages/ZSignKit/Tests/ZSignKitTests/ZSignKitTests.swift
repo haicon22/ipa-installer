@@ -1,0 +1,180 @@
+import Foundation
+import XCTest
+@testable import ZSignKit
+
+#if os(macOS)
+final class ZSignKitTests: XCTestCase {
+    func testAdHocAndPKCS12MachOSigningVerifiedByAppleCodesign() throws {
+        let fm = FileManager.default
+        let workDir = fm.temporaryDirectory.appendingPathComponent("zsignkit_test_\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: workDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: workDir) }
+
+        // 1. Biên dịch một tệp thực thi Mach-O arm64 thật bằng clang trên macOS
+        let cSourceURL = workDir.appendingPathComponent("main.c")
+        try "int main(void) { return 0; }\n".write(to: cSourceURL, atomically: true, encoding: .utf8)
+
+        let appDir = workDir
+            .appendingPathComponent("Payload", isDirectory: true)
+            .appendingPathComponent("MiniTest.app", isDirectory: true)
+        let plugDir = appDir
+            .appendingPathComponent("PlugIns", isDirectory: true)
+            .appendingPathComponent("DummyWidget.appex", isDirectory: true)
+        try fm.createDirectory(at: plugDir, withIntermediateDirectories: true)
+
+        let binURL = appDir.appendingPathComponent("MiniTest")
+        try runProcess("/usr/bin/clang", ["-arch", "arm64", cSourceURL.path, "-o", binURL.path])
+
+        // Gỡ bỏ chữ ký ad-hoc mặc định của linker Apple để đảm bảo đầu vào chưa ký sạch 100%
+        _ = try? runProcess("/usr/bin/codesign", ["--remove-signature", binURL.path])
+
+        let infoPlist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>CFBundleDisplayName</key><string>MiniTest</string>
+            <key>CFBundleExecutable</key><string>MiniTest</string>
+            <key>CFBundleIdentifier</key><string>vn.ipainstaller.minitest</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>CFBundleName</key><string>MiniTest</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>1.0.0</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>MinimumOSVersion</key><string>15.0</string>
+        </dict>
+        </plist>
+        """
+        try infoPlist.write(to: appDir.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
+        try infoPlist.write(to: plugDir.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
+
+        let unsignedIPA = workDir.appendingPathComponent("MiniTest-unsigned.ipa")
+        try runProcess("/usr/bin/zip", ["-qry", unsignedIPA.path, "Payload"], currentDirectory: workDir)
+
+        // 2. Tạo chứng chỉ X.509 RSA-2048 + .p12 + .mobileprovision thật bằng /usr/bin/openssl để test luồng CMS đầy đủ
+        let keyPEM = workDir.appendingPathComponent("dev.key")
+        let certPEM = workDir.appendingPathComponent("dev.crt")
+        let certDER = workDir.appendingPathComponent("dev.der")
+        let p12URL = workDir.appendingPathComponent("dev.p12")
+        let provURL = workDir.appendingPathComponent("dev.mobileprovision")
+
+        try runProcess("/usr/bin/openssl", [
+            "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", keyPEM.path,
+            "-out", certPEM.path,
+            "-days", "7",
+            "-subj", "/CN=Apple Development: CI Test (TEAM123456)/OU=TEAM123456/O=Test"
+        ])
+        try runProcess("/usr/bin/openssl", ["x509", "-in", certPEM.path, "-outform", "DER", "-out", certDER.path])
+        try runProcess("/usr/bin/openssl", [
+            "pkcs12", "-export",
+            "-inkey", keyPEM.path,
+            "-in", certPEM.path,
+            "-out", p12URL.path,
+            "-passout", "pass:testpass123"
+        ])
+
+        let derB64 = try Data(contentsOf: certDER).base64EncodedString()
+        let provXML = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>AppIDName</key><string>MiniTest</string>
+            <key>ApplicationIdentifierPrefix</key><array><string>TEAM123456</string></array>
+            <key>CreationDate</key><date>2026-11-24T00:00:00Z</date>
+            <key>ExpirationDate</key><date>2026-12-01T00:00:00Z</date>
+            <key>Name</key><string>CI Test Profile</string>
+            <key>TeamIdentifier</key><array><string>TEAM123456</string></array>
+            <key>TeamName</key><string>CI Personal Team</string>
+            <key>TimeToLive</key><integer>7</integer>
+            <key>UUID</key><string>11111111-2222-3333-4444-555555555555</string>
+            <key>DeveloperCertificates</key><array><data>\(derB64)</data></array>
+            <key>Entitlements</key>
+            <dict>
+                <key>application-identifier</key><string>TEAM123456.vn.ipainstaller.signed</string>
+                <key>com.apple.developer.team-identifier</key><string>TEAM123456</string>
+                <key>get-task-allow</key><true/>
+            </dict>
+        </dict>
+        </plist>
+        """
+        let provRawURL = workDir.appendingPathComponent("prov.plist")
+        try provXML.write(to: provRawURL, atomically: true, encoding: .utf8)
+        // Bọc prov.plist vào CMS SignedData chuẩn giống hệt embedded.mobileprovision thật
+        try runProcess("/usr/bin/openssl", [
+            "cms", "-sign", "-binary", "-nodetach",
+            "-in", provRawURL.path,
+            "-signer", certPEM.path,
+            "-inkey", keyPEM.path,
+            "-outform", "DER",
+            "-out", provURL.path
+        ])
+
+        // 3. Ký gói IPA thật bằng ZSignWrapper (vừa đổi Bundle ID, vừa bật gỡ bỏ PlugIns .appex!)
+        let signedIPA = workDir.appendingPathComponent("MiniTest-signed.ipa")
+        let tempZSignDir = workDir.appendingPathComponent("zsign_tmp", isDirectory: true)
+        try fm.createDirectory(at: tempZSignDir, withIntermediateDirectories: true)
+
+        try ZSignWrapper.signIPA(
+            ZSignRequest(
+                inputIPAPath: unsignedIPA.path,
+                outputIPAPath: signedIPA.path,
+                p12Path: p12URL.path,
+                p12Password: "testpass123",
+                mobileProvisionPath: provURL.path,
+                customBundleId: "vn.ipainstaller.signed",
+                customDisplayName: "Đã Ký Thật",
+                tempDirectoryPath: tempZSignDir.path,
+                adhocSign: false,
+                removeExtensions: true,
+                enableDocuments: true,
+                zipLevel: 6
+            )
+        )
+
+        XCTAssertTrue(fm.fileExists(atPath: signedIPA.path), "Phải xuất ra tệp IPA đã ký thật")
+
+        // 4. Giải nén ngược lại gói IPA đã ký và dùng chính /usr/bin/codesign của macOS kiểm chứng!
+        let verifyExtractDir = workDir.appendingPathComponent("verify_out", isDirectory: true)
+        try fm.createDirectory(at: verifyExtractDir, withIntermediateDirectories: true)
+        try runProcess("/usr/bin/unzip", ["-q", signedIPA.path, "-d", verifyExtractDir.path])
+
+        let signedAppDir = verifyExtractDir.appendingPathComponent("Payload/MiniTest.app")
+        let signedBin = signedAppDir.appendingPathComponent("MiniTest")
+
+        // Kiểm chứng PlugIns/DummyWidget.appex đã được gỡ sạch
+        XCTAssertFalse(
+            fm.fileExists(atPath: signedAppDir.appendingPathComponent("PlugIns/DummyWidget.appex").path),
+            "Thư mục PlugIns phụ phải được gỡ bỏ khi bật stripAppExtensions"
+        )
+
+        // Kiểm chứng bằng hàm tự xác minh nhị phân của ZSignWrapper (yêu cầu có cả CMS PKCS#7 blob!)
+        try ZSignWrapper.verifyMachOSignature(at: signedBin.path, requireCMSBlob: true)
+
+        // Kiểm chứng cấu trúc chữ ký Mach-O & CodeResources bằng chính /usr/bin/codesign --verify của Apple!
+        try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", signedAppDir.path])
+    }
+
+    @discardableResult
+    private func runProcess(_ launchPath: String, _ args: [String], currentDirectory: URL? = nil) throws -> String {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: launchPath)
+        proc.arguments = args
+        if let cwd = currentDirectory {
+            proc.currentDirectoryURL = cwd
+        }
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        try proc.run()
+        proc.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        if proc.terminationStatus != 0 {
+            XCTFail("Command failed (\(launchPath) \(args.joined(separator: " "))): \(out)")
+            throw NSError(domain: "ZSignKitTests", code: Int(proc.terminationStatus), userInfo: [NSLocalizedDescriptionKey: out])
+        }
+        return out
+    }
+}
+#endif
