@@ -36,10 +36,15 @@ public final class AppState: ObservableObject {
         self.selectedCertificateId = certificates.first?.id
         self.history = storage.loadHistory()
 
-        // Gắn 3 lõi độc lập đã hoàn thiện ở Giai đoạn 4
+        // Gắn đầy đủ 4 lõi độc lập (Giai đoạn 4 & Giai đoạn 6)
         self.ipaParser = NativeIPAParser()
         self.certValidator = NativeCertificateValidator()
         self.ipaSigner = NativeIPASigner()
+        let portKey = "ipa_local_server_port"
+        self.installationManager = NativeInstallationManager {
+            let p = UserDefaults.standard.integer(forKey: portKey)
+            return p > 0 ? p : 8443
+        }
 
         downloader.onDownloadCompleted = { [weak self] stagedURL, suggestedName in
             guard let self = self else { return }

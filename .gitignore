@@ -40,8 +40,9 @@ node_modules/
 dist-temp/
 
 # ==========================================
-# Android Termux Temp & Logs
+# Android Termux Temp, Compiled Binaries & Logs
 # ==========================================
 *.log
 tmp/
 .tmp/
+termux-bootstrap/bin/

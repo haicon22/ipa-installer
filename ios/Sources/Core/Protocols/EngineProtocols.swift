@@ -31,6 +31,7 @@ public protocol IPASignerProtocol {
     ) async throws -> URL
 }
 
+@MainActor
 public protocol InstallationManagerProtocol {
     var statusSummary: String { get }
     func triggerInstallation(

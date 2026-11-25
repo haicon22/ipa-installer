@@ -51,25 +51,62 @@ final class ZSignKitTests: XCTestCase {
         let unsignedIPA = workDir.appendingPathComponent("MiniTest-unsigned.ipa")
         try runProcess("/usr/bin/zip", ["-qry", unsignedIPA.path, "Payload"], currentDirectory: workDir)
 
-        // 2. Tạo chứng chỉ X.509 RSA-2048 + .p12 + .mobileprovision thật bằng /usr/bin/openssl để test luồng CMS đầy đủ
+        // 2. Tạo chuỗi chứng chỉ chuẩn 2 tầng (Root CA -> Developer Cert) + .p12 + .mobileprovision thật bằng /usr/bin/openssl
+        let caKey = workDir.appendingPathComponent("ca.key")
+        let caCert = workDir.appendingPathComponent("ca.crt")
         let keyPEM = workDir.appendingPathComponent("dev.key")
+        let csrPEM = workDir.appendingPathComponent("dev.csr")
         let certPEM = workDir.appendingPathComponent("dev.crt")
         let certDER = workDir.appendingPathComponent("dev.der")
         let p12URL = workDir.appendingPathComponent("dev.p12")
         let provURL = workDir.appendingPathComponent("dev.mobileprovision")
+        let extFile = workDir.appendingPathComponent("v3_ca.cnf")
+
+        try """
+        [v3_ca]
+        basicConstraints = critical,CA:TRUE
+        keyUsage = critical,keyCertSign,cRLSign
+        subjectKeyIdentifier = hash
+        [v3_leaf]
+        basicConstraints = critical,CA:FALSE
+        keyUsage = critical,digitalSignature
+        extendedKeyUsage = codeSigning
+        subjectKeyIdentifier = hash
+        authorityKeyIdentifier = keyid,issuer
+        """.write(to: extFile, atomically: true, encoding: .utf8)
 
         try runProcess("/usr/bin/openssl", [
             "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", caKey.path,
+            "-out", caCert.path,
+            "-days", "30",
+            "-subj", "/CN=CI Test Root CA/O=Test",
+            "-config", extFile.path,
+            "-extensions", "v3_ca"
+        ])
+        try runProcess("/usr/bin/openssl", [
+            "req", "-newkey", "rsa:2048", "-nodes",
             "-keyout", keyPEM.path,
+            "-out", csrPEM.path,
+            "-subj", "/CN=Apple Development: CI Test (TEAM123456)/OU=TEAM123456/O=Test"
+        ])
+        try runProcess("/usr/bin/openssl", [
+            "x509", "-req",
+            "-in", csrPEM.path,
+            "-CA", caCert.path,
+            "-CAkey", caKey.path,
+            "-CAcreateserial",
             "-out", certPEM.path,
             "-days", "7",
-            "-subj", "/CN=Apple Development: CI Test (TEAM123456)/OU=TEAM123456/O=Test"
+            "-extfile", extFile.path,
+            "-extensions", "v3_leaf"
         ])
         try runProcess("/usr/bin/openssl", ["x509", "-in", certPEM.path, "-outform", "DER", "-out", certDER.path])
         try runProcess("/usr/bin/openssl", [
             "pkcs12", "-export",
             "-inkey", keyPEM.path,
             "-in", certPEM.path,
+            "-certfile", caCert.path,
             "-out", p12URL.path,
             "-passout", "pass:testpass123"
         ])
@@ -111,10 +148,31 @@ final class ZSignKitTests: XCTestCase {
             "-out", provURL.path
         ])
 
-        // 3. Ký gói IPA thật bằng ZSignWrapper (vừa đổi Bundle ID, vừa bật gỡ bỏ PlugIns .appex!)
-        let signedIPA = workDir.appendingPathComponent("MiniTest-signed.ipa")
+        // 3A. Kiểm thử ký Ad-Hoc và xác minh toàn vẹn bảng băm SHA-256 bằng /usr/bin/codesign --verify --strict của Apple
+        let adhocIPA = workDir.appendingPathComponent("MiniTest-adhoc.ipa")
         let tempZSignDir = workDir.appendingPathComponent("zsign_tmp", isDirectory: true)
         try fm.createDirectory(at: tempZSignDir, withIntermediateDirectories: true)
+
+        try ZSignWrapper.signIPA(
+            ZSignRequest(
+                inputIPAPath: unsignedIPA.path,
+                outputIPAPath: adhocIPA.path,
+                customBundleId: "vn.ipainstaller.adhoc",
+                tempDirectoryPath: tempZSignDir.path,
+                adhocSign: true,
+                removeExtensions: true,
+                enableDocuments: true,
+                zipLevel: 6
+            )
+        )
+        let adhocExtractDir = workDir.appendingPathComponent("verify_adhoc", isDirectory: true)
+        try fm.createDirectory(at: adhocExtractDir, withIntermediateDirectories: true)
+        try runProcess("/usr/bin/unzip", ["-q", adhocIPA.path, "-d", adhocExtractDir.path])
+        let adhocAppDir = adhocExtractDir.appendingPathComponent("Payload/MiniTest.app")
+        try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", adhocAppDir.path])
+
+        // 3B. Kiểm thử ký đầy đủ PKCS#12 + CMS .mobileprovision (đổi Bundle ID + gỡ PlugIns .appex!)
+        let signedIPA = workDir.appendingPathComponent("MiniTest-signed.ipa")
 
         try ZSignWrapper.signIPA(
             ZSignRequest(
@@ -135,7 +193,7 @@ final class ZSignKitTests: XCTestCase {
 
         XCTAssertTrue(fm.fileExists(atPath: signedIPA.path), "Phải xuất ra tệp IPA đã ký thật")
 
-        // 4. Giải nén ngược lại gói IPA đã ký và dùng chính /usr/bin/codesign của macOS kiểm chứng!
+        // 4. Giải nén ngược lại gói IPA đã ký chứng chỉ và dùng /usr/bin/codesign -d -vvv của macOS kiểm chứng!
         let verifyExtractDir = workDir.appendingPathComponent("verify_out", isDirectory: true)
         try fm.createDirectory(at: verifyExtractDir, withIntermediateDirectories: true)
         try runProcess("/usr/bin/unzip", ["-q", signedIPA.path, "-d", verifyExtractDir.path])
@@ -152,8 +210,11 @@ final class ZSignKitTests: XCTestCase {
         // Kiểm chứng bằng hàm tự xác minh nhị phân của ZSignWrapper (yêu cầu có cả CMS PKCS#7 blob!)
         try ZSignWrapper.verifyMachOSignature(at: signedBin.path, requireCMSBlob: true)
 
-        // Kiểm chứng cấu trúc chữ ký Mach-O & CodeResources bằng chính /usr/bin/codesign --verify của Apple!
-        try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", signedAppDir.path])
+        // Đọc thông tin chữ ký CMS & TeamIdentifier bằng chính /usr/bin/codesign -d -vvv của Apple!
+        let codesignDetails = try runProcess("/usr/bin/codesign", ["-d", "-vvv", signedAppDir.path])
+        XCTAssertTrue(codesignDetails.contains("Identifier=vn.ipainstaller.signed"), "Bundle ID trong CodeDirectory phải khớp")
+        XCTAssertTrue(codesignDetails.contains("TeamIdentifier=TEAM123456"), "TeamIdentifier phải được nhúng chuẩn xác")
+        XCTAssertTrue(codesignDetails.contains("Authority=Apple Development: CI Test (TEAM123456)"), "Chuỗi chứng chỉ CMS phải hợp lệ")
     }
 
     @discardableResult

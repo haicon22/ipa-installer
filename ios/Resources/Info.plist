@@ -78,6 +78,13 @@
       </dict>
     </dict>
   </array>
+  <key>LSApplicationQueriesSchemes</key>
+  <array>
+    <string>sidestore</string>
+    <string>livecontainer</string>
+    <string>altstore</string>
+    <string>stosvpn</string>
+  </array>
   <key>NSLocalNetworkUsageDescription</key>
   <string>IPA Installer sử dụng kết nối nội bộ để phục vụ gói cài đặt OTA ngay trên thiết bị.</string>
 </dict>
