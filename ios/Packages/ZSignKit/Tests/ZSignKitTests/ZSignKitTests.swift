@@ -63,6 +63,9 @@ final class ZSignKitTests: XCTestCase {
         let extFile = workDir.appendingPathComponent("v3_ca.cnf")
 
         try """
+        [req]
+        distinguished_name = req_dn
+        [req_dn]
         [v3_ca]
         basicConstraints = critical,CA:TRUE
         keyUsage = critical,keyCertSign,cRLSign
