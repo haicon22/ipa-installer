@@ -23,6 +23,7 @@
 #include <libimobiledevice/lockdown.h>
 #include <libimobiledevice/afc.h>
 #include <libimobiledevice/installation_proxy.h>
+#include <libimobiledevice/property_list_service.h>
 
 #ifndef LOCKDOWN_DIR
 #define LOCKDOWN_DIR "/data/data/com.termux/files/usr/var/lib/lockdown"
@@ -340,10 +341,66 @@ static int cmd_install_ipa(const char* ipa_path) {
     return 0;
 }
 
+static int cmd_reveal_devmode(void) {
+    idevice_t dev = NULL;
+    if (idevice_new(&dev, NULL) != IDEVICE_E_SUCCESS || !dev) {
+        fprintf(stderr, "Lỗi: Chưa tìm thấy iPhone kết nối qua usbmuxd.\n");
+        return 1;
+    }
+
+    lockdownd_client_t lock = NULL;
+    if (lockdownd_client_new_with_handshake(dev, &lock, "ipa-installer-amfi") != LOCKDOWN_E_SUCCESS || !lock) {
+        idevice_free(dev);
+        fprintf(stderr, "Lỗi: Chưa ghép đôi tin cậy (Trust) với iPhone.\n");
+        return 1;
+    }
+
+    char ios_ver[64];
+    get_lockdown_str(lock, "ProductVersion", ios_ver, sizeof(ios_ver));
+    int major = atoi(ios_ver);
+    if (major > 0 && major < 16) {
+        printf("[THÔNG TIN] iPhone đang chạy iOS %s (< 16) — Không cần bật Developer Mode!\n", ios_ver);
+        lockdownd_client_free(lock);
+        idevice_free(dev);
+        return 0;
+    }
+
+    lockdownd_service_descriptor_t svc = NULL;
+    lockdownd_error_t lerr = lockdownd_start_service(lock, "com.apple.amfi.lockdown", &svc);
+    lockdownd_client_free(lock);
+
+    if (lerr != LOCKDOWN_E_SUCCESS || !svc) {
+        idevice_free(dev);
+        printf("[LƯU Ý] Dịch vụ com.apple.amfi.lockdown không mở trực tiếp (mã=%d) — Dòng Developer Mode sẽ tự hiện ngay sau khi đẩy IPA đầu tiên.\n", (int)lerr);
+        return 0;
+    }
+
+    property_list_service_client_t pls = NULL;
+    if (property_list_service_client_new(dev, svc, &pls) == PROPERTY_LIST_SERVICE_E_SUCCESS && pls) {
+        plist_t req = plist_new_dict();
+        plist_dict_set_item(req, "action", plist_new_uint(0)); /* 0 = Reveal Developer Mode in Settings */
+        property_list_service_send_xml_plist(pls, req);
+        plist_free(req);
+
+        plist_t resp = NULL;
+        if (property_list_service_receive_plist_with_timeout(pls, &resp, 5000) == PROPERTY_LIST_SERVICE_E_SUCCESS && resp) {
+            plist_free(resp);
+            printf("[THÀNH CÔNG] Đã gửi lệnh mở khóa hiển thị menu 'Chế độ nhà phát triển' (Developer Mode) trên iPhone!\n");
+            printf("  -> Mở Cài đặt > Quyền riêng tư & Bảo mật > kéo xuống dưới cùng sẽ thấy 'Chế độ nhà phát triển'.\n");
+        }
+        property_list_service_client_free(pls);
+    }
+
+    lockdownd_service_descriptor_free(svc);
+    idevice_free(dev);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         printf("Cách dùng: %s <lệnh> [tham số]\n", argv[0]);
         printf("  status                 : Kiểm tra kết nối iPhone, phiên bản iOS & trạng thái Trust\n");
+        printf("  reveal-devmode         : Làm hiện menu 'Chế độ nhà phát triển' đang bị ẩn trên iOS 16+\n");
         printf("  export-pairing <dir>   : Xuất tệp ghép đôi (.mobiledevicepairing) cho iPhone\n");
         printf("  install <signed.ipa>   : Đẩy và cài đặt tệp .ipa đã ký sang iPhone qua USB-OTG\n");
         return 1;
@@ -351,6 +408,9 @@ int main(int argc, char** argv) {
 
     if (strcmp(argv[1], "status") == 0) {
         return cmd_status();
+    }
+    if (strcmp(argv[1], "reveal-devmode") == 0) {
+        return cmd_reveal_devmode();
     }
     if (strcmp(argv[1], "export-pairing") == 0) {
         const char* out_dir = (argc >= 3) ? argv[2] : "./pairing_out";

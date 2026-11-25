@@ -4,78 +4,119 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PUSHER_BIN="$SCRIPT_DIR/bin/termux-ipa-pusher"
 PAIRING_DIR="$SCRIPT_DIR/pairing_out"
-MUX_SOCK="$PREFIX/var/run/usbmuxd"
-MUX_PID_FILE="$PREFIX/var/run/usbmuxd.pid"
 
 if [ ! -x "$PUSHER_BIN" ]; then
   "$SCRIPT_DIR/build.sh"
 fi
 
-mkdir -p "$PREFIX/var/run" "$PREFIX/var/lib/lockdown"
+mkdir -p "$PREFIX/var/run" "$PREFIX/var/lib/lockdown" "$PAIRING_DIR"
 
-HAS_ROOT=0
 if command -v su >/dev/null 2>&1 && su -c "id -u" 2>/dev/null | grep -q "^0$"; then
-  HAS_ROOT=1
-fi
+  echo "=== [CHẾ ĐỘ ROOT + TERMUX_USB_FD] Đang trực chờ bắt kết nối iPhone (90 giây) ==="
+  su -c "$PREFIX/bin/python3 - '$PUSHER_BIN' '$PAIRING_DIR' '${1:-}'" << 'PY'
+import os, sys, glob, time, subprocess
 
-if [ "$HAS_ROOT" -eq 1 ]; then
-  echo "=== [CHẾ ĐỘ ROOT TRỰC TIẾP] Kiểm tra iPhone trên bus USB nhân Linux ==="
-  APPLE_VID_FOUND="$(su -c 'for d in /sys/bus/usb/devices/*; do [ -f "$d/idVendor" ] && grep -qi "^05ac$" "$d/idVendor" && echo "FOUND"; done' || true)"
-  if [ -z "$APPLE_VID_FOUND" ]; then
-    echo "[DỪNG] Chưa phát hiện thiết bị Apple (VID 0x05ac) trên cổng USB-OTG."
-    echo "  -> Hãy cắm cáp nối Android với iPhone, mở khóa màn hình iPhone rồi chạy lại lệnh này."
-    exit 1
-  fi
+PREFIX = "/data/data/com.termux/files/usr"
+MUX_SOCK = f"{PREFIX}/var/run/usbmuxd"
+PUSHER = sys.argv[1]
+PAIR_OUT = sys.argv[2]
+IPA_TO_INSTALL = sys.argv[3] if len(sys.argv) > 3 else ""
 
-  echo "=== Khởi chạy daemon usbmuxd dưới quyền Root ==="
-  su -c "$PREFIX/bin/usbmuxd -X" >/dev/null 2>&1 || true
-  su -c "$PREFIX/bin/usbmuxd -U root -S $MUX_SOCK -P $MUX_PID_FILE"
-  trap 'su -c "$PREFIX/bin/usbmuxd -X" >/dev/null 2>&1 || true' EXIT
+otg_sw = "/sys/devices/virtual/oplus_chg/usb/otg_switch"
+if os.path.exists(otg_sw):
+    val = open(otg_sw).read().strip()
+    if val == "0":
+        print("[LƯU Ý] Công tắc OTG sau khi khởi động lại máy đang TẮT (otg_switch=0).")
+        print("  -> Đang bật lại otg_switch=1 (hoặc hãy bật 'Kết nối OTG' trong Cài đặt Android)...", flush=True)
+        try:
+            with open(otg_sw, "w") as f:
+                f.write("1\n")
+        except OSError:
+            pass
 
-  for _ in 1 2 3 4 5; do
-    if su -c "test -S $MUX_SOCK"; then
-      su -c "chmod 666 $MUX_SOCK"
-      su -c "chmod -R a+rX $PREFIX/var/lib/lockdown" 2>/dev/null || true
-      break
-    fi
-    sleep 1
-  done
+subprocess.run([f"{PREFIX}/bin/usbmuxd", "-X"], stderr=subprocess.DEVNULL)
+seen = set()
+deadline = time.time() + 90.0
+prompted = False
+
+while time.time() < deadline:
+    nodes = [c for c in sorted(glob.glob("/dev/bus/usb/001/*")) if not c.endswith("/001")]
+    if not nodes:
+        if not prompted:
+            print("Đang chờ tín hiệu USB từ iPhone (hãy cắm cáp và mở khóa màn hình iPhone)...", flush=True)
+            prompted = True
+        time.sleep(0.1)
+        continue
+
+    dev = nodes[-1]
+    if dev in seen:
+        time.sleep(0.1)
+        continue
+    seen.add(dev)
+
+    try:
+        fd = os.open(dev, os.O_RDWR)
+    except OSError:
+        time.sleep(0.05)
+        continue
+
+    if os.path.exists(MUX_SOCK):
+        try: os.unlink(MUX_SOCK)
+        except OSError: pass
+
+    env = os.environ.copy()
+    env["TERMUX_USB_FD"] = str(fd)
+    env["LD_LIBRARY_PATH"] = f"{PREFIX}/lib"
+    mux = subprocess.Popen(
+        [f"{PREFIX}/bin/usbmuxd", "-f", "-n", "-U", "root", "-S", MUX_SOCK, "-P", "NONE"],
+        env=env,
+        pass_fds=(fd,),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    for _ in range(35):
+        if os.path.exists(MUX_SOCK):
+            os.chmod(MUX_SOCK, 0o666)
+            break
+        time.sleep(0.03)
+    time.sleep(0.15)
+
+    cenv = os.environ.copy()
+    cenv["USBMUXD_SOCKET_ADDRESS"] = f"unix:{MUX_SOCK}"
+    cenv["LD_LIBRARY_PATH"] = f"{PREFIX}/lib"
+
+    paired = False
+    # Giữ phiên mở và thử ghép đôi liên tục trong khi kết nối USB đang sống
+    for _ in range(20):
+        if not os.path.exists(dev):
+            break
+        try:
+            r = subprocess.run([f"{PREFIX}/bin/idevicepair", "pair"], env=cenv, capture_output=True, text=True, timeout=3.0)
+            out = (r.stdout + " " + r.stderr).strip()
+            print(f"[{dev}] {out}", flush=True)
+            if "SUCCESS: Paired with device" in out:
+                subprocess.run([f"{PREFIX}/bin/idevicepair", "validate"], env=cenv, timeout=3.0)
+                os.system(f"chmod -R a+rX {PREFIX}/var/lib/lockdown 2>/dev/null || true")
+                subprocess.run([PUSHER, "status"], env=cenv, timeout=4.0)
+                subprocess.run([PUSHER, "reveal-devmode"], env=cenv, timeout=6.0)
+                subprocess.run([PUSHER, "export-pairing", PAIR_OUT], env=cenv, timeout=4.0)
+                if IPA_TO_INSTALL:
+                    subprocess.run([PUSHER, "install", IPA_TO_INSTALL], env=cenv)
+                paired = True
+                break
+        except subprocess.TimeoutExpired:
+            pass
+        time.sleep(1.2)
+
+    mux.terminate()
+    os.close(fd)
+    if paired:
+        sys.exit(0)
+
+print("[HẾT THỜI GIAN CHỜ] Chưa hoàn tất ghép đôi trong 90 giây.", flush=True)
+sys.exit(1)
+PY
 else
-  echo "=== [CHẾ ĐỘ DỰ PHÒNG KHÔNG ROOT] Quét cổng USB qua termux-usb ==="
-  USB_JSON="$(timeout 6 termux-usb -l || echo '[]')"
-  USB_DEV="$(python3 -c "import json; arr=json.loads('''$USB_JSON'''); print(arr[0] if arr else '')" 2>/dev/null || true)"
-  if [ -z "$USB_DEV" ]; then
-    echo "[DỪNG] Không tìm thấy thiết bị USB qua termux-usb."
-    exit 1
-  fi
-  usbmuxd -X 2>/dev/null || true
-  termux-usb -r -e "$PREFIX/bin/usbmuxd -f -n" "$USB_DEV" &
-  MUX_BG=$!
-  trap 'kill $MUX_BG 2>/dev/null || true; usbmuxd -X 2>/dev/null || true' EXIT
-  sleep 3
-fi
-
-echo "=== Thực hiện ghép đôi mật mã (Trust Pairing) với iPhone ==="
-echo "Hãy mở sáng màn hình iPhone -> Bấm 'Tin cậy' (Trust) -> Nhập mật mã khóa màn hình!"
-for attempt in 1 2 3 4; do
-  if [ "$HAS_ROOT" -eq 1 ]; then
-    su -c "USBMUXD_SOCKET_ADDRESS=unix:$MUX_SOCK $PREFIX/bin/idevicepair pair && USBMUXD_SOCKET_ADDRESS=unix:$MUX_SOCK $PREFIX/bin/idevicepair validate" && break
-  else
-    idevicepair pair && idevicepair validate && break
-  fi
-  echo "Đang chờ xác nhận 'Tin cậy' trên màn hình iPhone (lần $attempt/4)..."
-  sleep 4
-done
-
-if [ "$HAS_ROOT" -eq 1 ]; then
-  su -c "chmod -R a+rX $PREFIX/var/lib/lockdown" 2>/dev/null || true
-fi
-
-export USBMUXD_SOCKET_ADDRESS="unix:$MUX_SOCK"
-"$PUSHER_BIN" status
-"$PUSHER_BIN" export-pairing "$PAIRING_DIR"
-
-if [ "${1:-}" != "" ]; then
-  echo "=== Đang cài đặt gói IPA đã ký ($1) lên iPhone ==="
-  "$PUSHER_BIN" install "$1"
+  echo "Chế độ không Root cần termux-usb."
+  exit 1
 fi
